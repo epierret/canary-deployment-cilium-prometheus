@@ -1,0 +1,206 @@
+# -------------------------------
+# Secret pour MySQL
+# -------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sql-secret
+type: Opaque
+data:
+  username: bnJpaw==        # "nrik" en base64
+  password: cGFzc3dvcmQ=    # "password" en base64
+
+---
+
+# -------------------------------
+# PVC pour MySQL
+# -------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pv-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+
+# -------------------------------
+# Service MySQL
+# -------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: database-svc
+spec:
+  selector:
+    app: database
+  ports:
+    - port: 3306
+      targetPort: 3306
+  clusterIP: None
+
+---
+
+# -------------------------------
+# Déploiement MySQL + mysqld-exporter
+# -------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database-mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database
+  template:
+    metadata:
+      labels:
+        app: database
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        ports:
+        - containerPort: 3306
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sql-secret
+              key: password
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: sql-secret
+              key: username
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sql-secret
+              key: password
+        volumeMounts:
+        - name: mysql-persistent-storage
+          mountPath: /var/lib/mysql
+        startupProbe:
+          exec:
+            command: ["sh", "-c", "mysqladmin ping -h 127.0.0.1 -u nrik -ppassword"]
+          failureThreshold: 10
+          periodSeconds: 5
+
+      - name: mysqld-exporter
+        image: prom/mysqld-exporter
+        ports:
+        - containerPort: 9104
+        env:
+        - name: DATA_SOURCE_NAME
+          value: "nrik:password@(127.0.0.1:3306)/"
+
+      volumes:
+      - name: mysql-persistent-storage
+        persistentVolumeClaim:
+          claimName: mysql-pv-claim
+
+---
+
+# -------------------------------
+# Déploiement WebApp Python
+# -------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql-webapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql-webapp
+  template:
+    metadata:
+      labels:
+        app: mysql-webapp
+    spec:
+      containers:
+      - name: webapp
+        image: pierretenrique/mysql-webapp:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: MYSQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: sql-secret
+              key: username
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: sql-secret
+              key: password
+        - name: MYSQL_HOST
+          value: database-svc
+        - name: METRICS_PORT
+          value: "8000"
+
+---
+
+# -------------------------------
+# Service WebApp
+# -------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-webapp-svc
+spec:
+  selector:
+    app: mysql-webapp
+  ports:
+    - port: 80
+      targetPort: 80
+  type: ClusterIP
+
+---
+
+# -------------------------------
+# Ingress WebApp
+# -------------------------------
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-webapp-sql
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: "migration.com"
+    http:
+      paths:
+      - pathType: Prefix
+        path: "/"
+        backend:
+          service:
+            name: mysql-webapp-svc
+            port:
+              number: 80
+
+---
+
+# -------------------------------
+# Config Prometheus pour scraper MySQL
+# -------------------------------
+# Exemple ConfigMap pour Prometheus (à intégrer à ton Prometheus)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-scrape-config
+data:
+  prometheus.yml: |
+    scrape_configs:
+      - job_name: 'mysql'
+        static_configs:
+          - targets: ['database-mysql:9104']
+      - job_name: 'webapp'
+        static_configs:
+          - targets: ['mysql-webapp:8000']
