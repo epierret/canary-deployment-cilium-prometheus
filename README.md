@@ -37,7 +37,8 @@ Copier le code
 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.9.1/standard-install.yaml
 kubectl get crds | grep gateway
 
-
+# crds for gateway api 
+kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
 
 # canary-deployment-cilium-prometheus
 
